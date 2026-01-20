@@ -1,4 +1,3 @@
-
 /*
  * v3 Turbo-Portable (v9) - 静态暴力版
  * 
@@ -23,6 +22,7 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <getopt.h>
+#include <stdbool.h>  // <--- 【关键修复】添加这一行
 
 // =========================================================
 // 配置
@@ -244,5 +244,3 @@ int main(int argc, char **argv) {
     printf("[INFO] Shutdown complete.\n");
     return 0;
 }
-
-
