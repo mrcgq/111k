@@ -1,13 +1,16 @@
 #!/bin/bash
-# v3 Universal Installer - Final Production Version
+# v3 Universal Installer - (Recommended Final Version)
+# Combines the best features of both versions
 
 set -e
 
 # =========================================================
-# 1. 配置与全局定义
+# 1. 配置与全局定义 (来自版本2，已修正)
 # =========================================================
-# 【关键修复 #1】URL 已修正为你自己的仓库地址
-BASE_URL="https://github.com/mrcgq/111k/releases/download/v3"
+BASE_URL="https://github.com/mrcgq/111k/releases/download/ffff"
+# 【重要】如果你的 Release Tag 不是 "v3"，请修改上面的地址
+# 例如，如果你的 Tag 是 "ffff"，就改成 https://github.com/mrcgq/111k/releases/download/ffff
+
 INSTALL_PATH="/usr/local/bin/v3_server"
 XDP_PATH="/usr/local/etc/v3_xdp.o"
 SERVICE_NAME="v3-server"
@@ -19,9 +22,9 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-# 【关键修复 #2】文件名已修正为与你的 GitHub Actions 编译产物完全一致
+# 文件名映射 (来自版本2，正确)
 declare -A VERSION_FILES=(
-    ["v5"]="v3_server_v5_avx2"  # 默认使用 v5 的 AVX2 版本作为代表
+    ["v5"]="v3_server_v5_avx2"
     ["v6"]="v3_server_v6_portable"
     ["v7"]="v3_server_v7_rescue"
     ["v8"]="v3_server_v8_turbo"
@@ -87,13 +90,13 @@ attach_xdp() {
     log_info "Attempting to attach XDP program to $IFACE..."
 
     if ip link set dev "$IFACE" xdp obj "$XDP_OBJ" sec xdp 2>/dev/null; then
-        log_info "✅ Native XDP attached successfully (Hardware/Driver Offload)."
+        log_info "✅ Native XDP attached successfully."
         return 0
     fi
     
-    log_warn "Native XDP failed (Driver not supported?). Falling back to Generic Mode..."
+    log_warn "Native XDP failed. Falling back to Generic Mode..."
     if ip link set dev "$IFACE" xdpgeneric obj "$XDP_OBJ" sec xdp 2>/dev/null; then
-        log_info "✅ Generic XDP attached successfully (Software Mode)."
+        log_info "✅ Generic XDP attached successfully."
         return 0
     fi
     
@@ -102,11 +105,30 @@ attach_xdp() {
 }
 
 # =========================================================
-# 3. 探测与推断模块
+# 3. 探测与推断模块 (来自版本1，更智能)
 # =========================================================
-# 注意：run_probe 依赖 v3_detect.sh 也能被正确下载，这里简化为只使用本地推断
+run_probe() {
+    log_info "Running capability probe..."
+    local DETECT_URL="https://raw.githubusercontent.com/mrcgq/111k/main/scripts/v3_detect.sh"
+    
+    if command -v curl &>/dev/null; then
+        local probe_result
+        probe_result=$(curl -sSL --connect-timeout 3 "$DETECT_URL" | bash -s -- --json 2>/dev/null || true)
+        
+        if [[ -n "$probe_result" ]]; then
+            PROBED_VERSION=$(echo "$probe_result" | grep -o '"best_version": "[^"]*"' | cut -d'"' -f4)
+            if [[ -n "$PROBED_VERSION" ]]; then
+                log_info "Probe recommended version: $PROBED_VERSION"
+                return 0
+            fi
+        fi
+    fi
+    
+    log_warn "Probe failed or network unreachable, falling back to local inference"
+    return 1
+}
+
 get_local_inference() {
-    log_info "Inferring best version based on local system..."
     local ARCH=$(uname -m)
     local KERNEL=$(uname -r | cut -d. -f1)
     
@@ -120,11 +142,10 @@ get_local_inference() {
 interactive_select() {
     echo ""
     echo "Please select v3 version to install:"
-    echo ""
-    echo "  1) v5 - Enterprise     [Dynamic] Ultimate Performance (io_uring + AVX2 + XDP)"
-    echo "  2) v6 - Portable       [Static]  Extreme Compatibility (Musl libc)"
-    echo "  3) v7 - Rescue         [Dynamic] Survival Mode (WebSocket + TLS)"
-    echo "  4) v8 - Turbo          [Dynamic] Brutal Speed (Minimal Logic)"
+    echo "  1) v5 - Enterprise     [Dynamic] Ultimate Performance"
+    echo "  2) v6 - Portable       [Static]  Maximum Compatibility"
+    echo "  3) v7 - Rescue         [Dynamic] WSS/TLS Mode"
+    echo "  4) v8 - Turbo          [Dynamic] Brutal Speed"
     echo "  5) v9 - Turbo-Portable [Static]  Brutal Speed Static"
     echo "  0) Auto-detect recommended version"
     echo ""
@@ -136,7 +157,13 @@ interactive_select() {
         3) TARGET_VERSION="v7" ;;
         4) TARGET_VERSION="v8" ;;
         5) TARGET_VERSION="v9" ;;
-        0|"") TARGET_VERSION=$(get_local_inference) ;;
+        0|"") 
+            if ! run_probe; then
+                TARGET_VERSION=$(get_local_inference)
+            else
+                TARGET_VERSION="$PROBED_VERSION"
+            fi
+            ;;
         *) log_error "Invalid option"; exit 1 ;;
     esac
 }
@@ -159,14 +186,7 @@ configure_service() {
     fi
 
     log_info "Creating systemd service..."
-    # 示例参数，你可以根据需要调整
-    local EXTRA_ARGS="--port=51820 --fec --pacing=100"
-    if [[ "$version" == "v7" ]]; then
-        # v7 需要证书路径作为参数
-        EXTRA_ARGS="--port=443 --cert=/etc/v3/cert.pem --key=/etc/v3/key.pem"
-        mkdir -p /etc/v3
-        log_warn "v7 (Rescue) requires SSL certificates at /etc/v3/cert.pem and /etc/v3/key.pem"
-    fi
+    local EXTRA_ARGS="--port=51820" # 简化默认参数
 
     cat > /etc/systemd/system/$SERVICE_NAME.service <<EOF
 [Unit]
@@ -215,15 +235,30 @@ download_and_install() {
     configure_service "$version"
 }
 
+# 验证函数 (来自版本1，更精确)
 verify_installation() {
     local version="$1"
     log_info "Verifying installation of $version..."
     
-    # 稍微等待服务启动
+    # 1. 预检查，捕获指令集错误
+    set +e
+    timeout 2 "$INSTALL_PATH" --help >/dev/null 2>&1
+    local exit_code=$?
+    set -e
+    
+    if [[ $exit_code -eq 132 ]]; then # SIGILL (Illegal Instruction)
+        log_error "✗ Illegal Instruction! Your CPU is not compatible with $version."
+        return 1
+    elif [[ $exit_code -eq 127 ]]; then # 找不到库
+        log_error "✗ Shared library missing! Your system is not compatible with $version."
+        return 1
+    fi
+    
+    # 2. 检查服务是否存活
     sleep 2
     if ! systemctl is-active --quiet $SERVICE_NAME; then
         log_error "✗ Service failed to start. It may have crashed."
-        log_error "Please check logs with: journalctl -u $SERVICE_NAME -n 20"
+        journalctl -u $SERVICE_NAME -n 10 --no-pager
         return 1
     fi
     
@@ -232,23 +267,41 @@ verify_installation() {
 }
 
 # =========================================================
-# 5. 主程序流程
+# 5. 主程序流程 (来自版本1，更灵活)
 # =========================================================
 main() {
     check_root
     print_banner
     
     TARGET_VERSION=""
-    # 简化参数处理，支持 --version v5 或 --interactive
-    if [[ "$1" == "--version" && -n "$2" ]]; then
-        TARGET_VERSION="$2"
-    else
+    INTERACTIVE=false
+    AUTO_CONFIRM=false
+    
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --version) TARGET_VERSION="$2"; shift 2 ;;
+            --interactive) INTERACTIVE=true; shift ;;
+            --auto) AUTO_CONFIRM=true; shift ;;
+            *) INTERACTIVE=true; shift ;; # 默认交互模式
+        esac
+    done
+    
+    if [[ "$INTERACTIVE" == "true" ]] && [[ -z "$TARGET_VERSION" ]]; then
         interactive_select
+    elif [[ -z "$TARGET_VERSION" ]]; then
+        if ! run_probe; then
+            TARGET_VERSION=$(get_local_inference)
+        else
+            TARGET_VERSION="$PROBED_VERSION"
+        fi
+        log_info "Auto-selected version: $TARGET_VERSION"
     fi
     
-    log_info "Will install version: $TARGET_VERSION - ${VERSION_NAMES[$TARGET_VERSION]}"
-    read -p "Continue? [Y/n] " confirm
-    if [[ ! "$confirm" =~ ^[Yy]?$ ]]; then echo "Aborted."; exit 0; fi
+    if [[ "$AUTO_CONFIRM" != "true" ]]; then
+        log_info "Will install version: $TARGET_VERSION - ${VERSION_NAMES[$TARGET_VERSION]}"
+        read -p "Continue? [Y/n] " confirm
+        if [[ ! "$confirm" =~ ^[Yy]?$ ]]; then echo "Aborted."; exit 0; fi
+    fi
     
     # --- 安装阶段 ---
     download_and_install "$TARGET_VERSION"
@@ -259,7 +312,6 @@ main() {
         
         if [[ "$TARGET_VERSION" != "v6" ]]; then
             log_info ">>> Initiating AUTOMATIC FALLBACK to v6 (Portable)..."
-            
             download_and_install "v6"
             
             if verify_installation "v6"; then
