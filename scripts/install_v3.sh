@@ -7,9 +7,9 @@ set -e
 # =========================================================
 # 1. 配置与全局定义 (来自版本2，已修正)
 # =========================================================
-BASE_URL="https://github.com/mrcgq/111k/releases/download/ffff"
+BASE_URL="https://github.com/mrcgq/111k/releases/download/fffff"
 # 【重要】如果你的 Release Tag 不是 "v3"，请修改上面的地址
-# 例如，如果你的 Tag 是 "ffff"，就改成 https://github.com/mrcgq/111k/releases/download/ffff
+# 例如，如果你的 Tag 是 "ffff"，就改成 https://github.com/mrcgq/111k/releases/download/fffff
 
 INSTALL_PATH="/usr/local/bin/v3_server"
 XDP_PATH="/usr/local/etc/v3_xdp.o"
