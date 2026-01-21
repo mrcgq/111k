@@ -1,15 +1,19 @@
 #!/bin/bash
 # v3 Universal Installer - (Recommended Final Version)
-# Combines the best features of both versions
+# Combines the best features of both versions with dynamic release fetching.
 
 set -e
 
 # =========================================================
-# 1. 配置与全局定义 (来自版本2，已修正)
+# 1. 配置与全局定义 (最终修复版)
 # =========================================================
-BASE_URL="https://github.com/mrcgq/111k/releases/download/fffff"
-# 【重要】如果你的 Release Tag 不是 "v3"，请修改上面的地址
-# 例如，如果你的 Tag 是 "ffff"，就改成 https://github.com/mrcgq/111k/releases/download/fffff
+# 【重要】这里只定义仓库地址，不包含版本号。脚本会自动获取最新版本。
+REPO_OWNER="mrcgq"
+REPO_NAME="111k"
+# API URL 用于自动获取最新版本
+API_URL="https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/releases/latest"
+# 下载 URL 模板
+DOWNLOAD_URL_TEMPLATE="https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/download"
 
 INSTALL_PATH="/usr/local/bin/v3_server"
 XDP_PATH="/usr/local/etc/v3_xdp.o"
@@ -22,9 +26,12 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-# 文件名映射 (来自版本2，正确)
+# 文件名映射 (与你的 Makefile 和 build_server.yml 完全对应)
 declare -A VERSION_FILES=(
-    ["v5"]="v3_server_v5_avx2"
+    ["v5"]="v3_server_v5_avx2"       # 探测脚本会推荐v5，这里默认下载avx2版
+    ["v5_generic"]="v3_server_v5_generic"
+    ["v5_avx2"]="v3_server_v5_avx2"
+    ["v5_avx512"]="v3_server_v5_avx512"
     ["v6"]="v3_server_v6_portable"
     ["v7"]="v3_server_v7_rescue"
     ["v8"]="v3_server_v8_turbo"
@@ -105,15 +112,15 @@ attach_xdp() {
 }
 
 # =========================================================
-# 3. 探测与推断模块 (来自版本1，更智能)
+# 3. 探测与推断模块
 # =========================================================
 run_probe() {
     log_info "Running capability probe..."
-    local DETECT_URL="https://raw.githubusercontent.com/mrcgq/111k/main/scripts/v3_detect.sh"
+    local DETECT_URL="https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}/main/scripts/v3_detect.sh"
     
     if command -v curl &>/dev/null; then
         local probe_result
-        probe_result=$(curl -sSL --connect-timeout 3 "$DETECT_URL" | bash -s -- --json 2>/dev/null || true)
+        probe_result=$(curl -sSL --connect-timeout 5 "$DETECT_URL" | bash -s -- --json 2>/dev/null || true)
         
         if [[ -n "$probe_result" ]]; then
             PROBED_VERSION=$(echo "$probe_result" | grep -o '"best_version": "[^"]*"' | cut -d'"' -f4)
@@ -171,22 +178,35 @@ interactive_select() {
 # =========================================================
 # 4. 安装与验证逻辑
 # =========================================================
+
+# === 新增: 获取最新 Release 的 Tag 名称 ===
+get_latest_tag() {
+    if command -v curl &>/dev/null; then
+        curl -s $API_URL | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/'
+    else
+        echo "latest"
+    fi
+}
+
 configure_service() {
     local version="$1"
+    local release_tag="$2"
     
     if [[ "$version" == "v5" ]] || [[ "$version" == "v8" ]]; then
         log_info "Downloading v3_xdp.o for kernel acceleration..."
-        if curl -L -o "$XDP_PATH" "$BASE_URL/v3_xdp.o"; then
+        if curl -L -o "$XDP_PATH" "$DOWNLOAD_URL_TEMPLATE/$release_tag/v3_xdp.o"; then
             chmod 644 "$XDP_PATH"
             local DEFAULT_IFACE=$(ip -o -4 route show to default | awk '{print $5}' | head -n1)
             if [[ -n "$DEFAULT_IFACE" ]]; then
                 attach_xdp "$DEFAULT_IFACE" "$XDP_PATH" || true
             fi
+        else
+            log_warn "Failed to download v3_xdp.o, continuing without it."
         fi
     fi
 
     log_info "Creating systemd service..."
-    local EXTRA_ARGS="--port=51820" # 简化默认参数
+    local EXTRA_ARGS="--port=51820"
 
     cat > /etc/systemd/system/$SERVICE_NAME.service <<EOF
 [Unit]
@@ -215,46 +235,62 @@ EOF
 }
 
 download_and_install() {
-    local version="$1"
-    local fname="${VERSION_FILES[$version]}"
+    local version_code="$1"
+    local release_tag="$2"
+
+    # 智能选择 v5 的具体 CPU 版本
+    local final_version_code="$version_code"
+    if [[ "$version_code" == "v5" ]]; then
+        local flags=$(grep 'flags' /proc/cpuinfo | head -n 1 | cut -d: -f2)
+        if [[ $flags == *"avx512"* ]]; then
+            final_version_code="v5_avx512"
+        elif [[ $flags == *"avx2"* ]]; then
+            final_version_code="v5_avx2"
+        else
+            final_version_code="v5_generic"
+        fi
+        log_info "Auto-selected v5 sub-version: $final_version_code"
+    fi
     
+    local fname="${VERSION_FILES[$final_version_code]}"
     if [[ -z "$fname" ]]; then
-        log_error "Unknown version code: $version"
+        log_error "Unknown version code: $final_version_code"
         return 1
     fi
     
-    log_info "Downloading $fname ($version) from release..."
+    local download_url="$DOWNLOAD_URL_TEMPLATE/$release_tag/$fname"
+    
+    log_info "Downloading $fname (version: $final_version_code, release: $release_tag)..."
+    log_info "URL: $download_url"
+    
     cleanup_old
     
-    if ! curl -L -o "$INSTALL_PATH" "$BASE_URL/$fname"; then
-        log_error "Download failed for $fname. Please check the release page and version tag."
+    if ! curl -L -o "$INSTALL_PATH" "$download_url"; then
+        log_error "Download failed for $fname. Please check the release tag and network."
         return 1
     fi
     chmod +x "$INSTALL_PATH"
     
-    configure_service "$version"
+    configure_service "$final_version_code" "$release_tag"
 }
 
-# 验证函数 (来自版本1，更精确)
 verify_installation() {
     local version="$1"
     log_info "Verifying installation of $version..."
     
-    # 1. 预检查，捕获指令集错误
     set +e
     timeout 2 "$INSTALL_PATH" --help >/dev/null 2>&1
     local exit_code=$?
     set -e
     
-    if [[ $exit_code -eq 132 ]]; then # SIGILL (Illegal Instruction)
+    if [[ $exit_code -eq 132 ]]; then
         log_error "✗ Illegal Instruction! Your CPU is not compatible with $version."
         return 1
-    elif [[ $exit_code -eq 127 ]]; then # 找不到库
+    elif [[ $exit_code -eq 127 ]]; then
         log_error "✗ Shared library missing! Your system is not compatible with $version."
         return 1
     fi
     
-    # 2. 检查服务是否存活
     sleep 2
     if ! systemctl is-active --quiet $SERVICE_NAME; then
         log_error "✗ Service failed to start. It may have crashed."
@@ -267,25 +303,28 @@ verify_installation() {
 }
 
 # =========================================================
-# 5. 主程序流程 (来自版本1，更灵活)
+# 5. 主程序流程
 # =========================================================
 main() {
     check_root
     print_banner
     
-    TARGET_VERSION=""
-    INTERACTIVE=false
-    AUTO_CONFIRM=false
+    local TARGET_VERSION=""
+    local RELEASE_TAG=""
+    local INTERACTIVE=false
+    local AUTO_CONFIRM=false
     
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --version) TARGET_VERSION="$2"; shift 2 ;;
+            --tag) RELEASE_TAG="$2"; shift 2 ;;
             --interactive) INTERACTIVE=true; shift ;;
             --auto) AUTO_CONFIRM=true; shift ;;
-            *) INTERACTIVE=true; shift ;; # 默认交互模式
+            *) shift ;;
         esac
     done
     
+    # 确定要安装的版本
     if [[ "$INTERACTIVE" == "true" ]] && [[ -z "$TARGET_VERSION" ]]; then
         interactive_select
     elif [[ -z "$TARGET_VERSION" ]]; then
@@ -297,14 +336,26 @@ main() {
         log_info "Auto-selected version: $TARGET_VERSION"
     fi
     
+    # 确定 Release Tag
+    if [[ -z "$RELEASE_TAG" ]]; then
+        log_info "Detecting latest release version from GitHub..."
+        RELEASE_TAG=$(get_latest_tag)
+        if [[ -z "$RELEASE_TAG" ]] || [[ "$RELEASE_TAG" == "latest" ]]; then
+            log_error "Failed to detect latest release tag. Please specify with --tag <version>."
+            exit 1
+        fi
+    fi
+    log_info "Using Release Tag: $RELEASE_TAG"
+    
+    # 用户确认
     if [[ "$AUTO_CONFIRM" != "true" ]]; then
-        log_info "Will install version: $TARGET_VERSION - ${VERSION_NAMES[$TARGET_VERSION]}"
+        log_info "Will install version: $TARGET_VERSION - ${VERSION_NAMES[$TARGET_VERSION]} from release $RELEASE_TAG"
         read -p "Continue? [Y/n] " confirm
         if [[ ! "$confirm" =~ ^[Yy]?$ ]]; then echo "Aborted."; exit 0; fi
     fi
     
     # --- 安装阶段 ---
-    download_and_install "$TARGET_VERSION"
+    download_and_install "$TARGET_VERSION" "$RELEASE_TAG"
     
     # --- 验证与回退阶段 ---
     if ! verify_installation "$TARGET_VERSION"; then
@@ -312,7 +363,7 @@ main() {
         
         if [[ "$TARGET_VERSION" != "v6" ]]; then
             log_info ">>> Initiating AUTOMATIC FALLBACK to v6 (Portable)..."
-            download_and_install "v6"
+            download_and_install "v6" "$RELEASE_TAG"
             
             if verify_installation "v6"; then
                 log_info "Fallback to v6 successful! v6 Portable is now running."
