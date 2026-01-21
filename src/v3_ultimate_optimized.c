@@ -1,15 +1,10 @@
-
-
-
-
-
-
 /*
  * v3 Server Max (Ultimate Optimized)
  * 集成：io_uring, SIMD FEC, Pacing, Anti-Detect, Health Check
  * 
  * [修复版] 包含正确的 Magic 派生和验证逻辑
  * [增强版] 支持通过 --bind 参数指定监听地址
+ * [协议对齐] 元数据解析与 111w 客户端完全匹配
  */
 
 #define _GNU_SOURCE
@@ -58,22 +53,16 @@ typedef struct {
     fec_type_t  fec_type;
     uint8_t     fec_data_shards;
     uint8_t     fec_parity_shards;
-    
     bool        pacing_enabled;
-    uint64_t    pacing_rate;
     uint64_t    pacing_initial_bps;
     uint64_t    pacing_min_bps;
     uint64_t    pacing_max_bps;
-    
     ad_profile_t ad_profile;
     uint16_t     mtu;
-    
     uint16_t    port;
     const char *bind_addr;
-    
     bool        verbose;
     bool        benchmark;
-
     bool        health_enabled;
     int         health_port;
     int         health_interval;
@@ -141,37 +130,29 @@ static io_context_t g_io_ctx_pool[MAX_CONNS];
 static uint32_t derive_magic(uint64_t window) {
     uint8_t input[40];
     memcpy(input, g_master_key, 32);
-    
     for (int i=0; i<8; i++) input[32+i] = (window >> (i*8)) & 0xFF;
     
     uint8_t hash[32];
-    if (crypto_generichash(hash, sizeof(hash), input, sizeof(input), NULL, 0) != 0) {
-        return 0;
-    }
+    if (crypto_generichash(hash, sizeof(hash), input, sizeof(input), NULL, 0) != 0) return 0;
     
     uint32_t magic;
     memcpy(&magic, hash, 4);
-    
     return magic;
 }
 
 static uint32_t get_current_magic(void) {
     time_t now = time(NULL);
-    uint64_t window = now / MAGIC_WINDOW_SEC;
-    return derive_magic(window);
+    return derive_magic(now / MAGIC_WINDOW_SEC);
 }
 
 static bool verify_magic(uint32_t received) {
     time_t now = time(NULL);
     uint64_t current_window = now / MAGIC_WINDOW_SEC;
-    
     if (received == derive_magic(current_window)) return true;
-    
     for (int offset = 1; offset <= MAGIC_TOLERANCE; offset++) {
         if (received == derive_magic(current_window - offset)) return true;
         if (received == derive_magic(current_window + offset)) return true;
     }
-    
     return false;
 }
 
@@ -211,7 +192,6 @@ static void init_modules(void) {
     }
     
     randombytes_buf(g_master_key, sizeof(g_master_key));
-    
     if (g_config.verbose) {
         printf("[Crypto] Master key generated\n");
         printf("[Crypto] Current magic: 0x%08X\n", get_current_magic());
@@ -324,8 +304,8 @@ static void handle_packet(io_context_t *ctx, int len) {
         return;
     }
 
-	
-	uint64_t session_id;
+    /* === 关键修改点 1: 修正元数据解析 === */
+    uint64_t session_id;
     uint16_t stream_id;
     uint16_t flags;
     uint32_t sequence;
@@ -340,8 +320,9 @@ static void handle_packet(io_context_t *ctx, int len) {
     if (g_config.verbose) {
         char client_ip[INET_ADDRSTRLEN];
         inet_ntop(AF_INET, &ctx->addr.sin_addr, client_ip, sizeof(client_ip));
-        printf("[RECV] Session: 0x%lX, Intent: %d, Stream: %d, Payload: %d bytes from %s\n",
-               session_token, intent_id, stream_id, payload_len, client_ip);
+        /* === 关键修改点 2: 更新日志打印的变量 === */
+        printf("[RECV] Session: 0x%lX, Stream: %d, Seq: %u, Payload: %d bytes from %s\n",
+               session_id, stream_id, sequence, payload_len, client_ip);
     }
     
     if (g_config.pacing_enabled && payload_len > 0) {
@@ -403,9 +384,10 @@ static void parse_args(int argc, char **argv) {
         switch (opt) {
             case 'f': g_config.fec_enabled = true; g_config.fec_type = FEC_TYPE_AUTO; break;
             case 'F':
-                if (sscanf(optarg, "%hhu:%hhu", &g_config.fec_data_shards, &g_config.fec_parity_shards) == 2) {
-                    g_config.fec_enabled = true;
-                } else { fprintf(stderr, "Invalid FEC shards format. Use D:P\n"); exit(1); }
+                if (sscanf(optarg, "%hhu:%hhu", &g_config.fec_data_shards, &g_config.fec_parity_shards) != 2) {
+                    fprintf(stderr, "Invalid FEC shards format. Use D:P\n"); exit(1);
+                }
+                g_config.fec_enabled = true;
                 break;
             case 'P': g_config.pacing_enabled = true; g_config.pacing_initial_bps = atoll(optarg) * 1000000ULL; break;
             case 'A':
@@ -561,5 +543,3 @@ int main(int argc, char **argv) {
     printf("[INFO] Shutdown complete.\n");
     return 0;
 }
-
-
