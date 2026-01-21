@@ -304,7 +304,7 @@ static void handle_packet(io_context_t *ctx, int len) {
         return;
     }
 
-    /* === 关键修改点 1: 修正元数据解析 === */
+    /* === 关键修改点 1: 修正元数据解析，与 111w 客户端对齐 === */
     uint64_t session_id;
     uint16_t stream_id;
     uint16_t flags;
@@ -320,7 +320,7 @@ static void handle_packet(io_context_t *ctx, int len) {
     if (g_config.verbose) {
         char client_ip[INET_ADDRSTRLEN];
         inet_ntop(AF_INET, &ctx->addr.sin_addr, client_ip, sizeof(client_ip));
-        /* === 关键修改点 2: 更新日志打印的变量 === */
+        /* === 关键修改点 2: 更新日志打印的变量名 === */
         printf("[RECV] Session: 0x%lX, Stream: %d, Seq: %u, Payload: %d bytes from %s\n",
                session_id, stream_id, sequence, payload_len, client_ip);
     }
