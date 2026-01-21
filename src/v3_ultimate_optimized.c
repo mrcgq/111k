@@ -324,13 +324,16 @@ static void handle_packet(io_context_t *ctx, int len) {
         return;
     }
 
-    uint64_t session_token;
-    uint16_t intent_id, stream_id, flags;
+	
+	uint64_t session_id;
+    uint16_t stream_id;
+    uint16_t flags;
+    uint32_t sequence;
     
-    memcpy(&session_token, plaintext, 8);
-    memcpy(&intent_id, plaintext + 8, 2);
-    memcpy(&stream_id, plaintext + 10, 2);
-    memcpy(&flags, plaintext + 12, 2);
+    memcpy(&session_id, plaintext, 8);
+    memcpy(&stream_id, plaintext + 8, 2);
+    memcpy(&flags, plaintext + 10, 2);
+    memcpy(&sequence, plaintext + 12, 4);
     
     int payload_len = len - (int)V3_HEADER_SIZE;
     
